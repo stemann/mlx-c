@@ -1,0 +1,77 @@
+name: build
+on:
+  push:
+    branches:
+      - main
+      - feature/*
+concurrency:
+  # Cancel previous runs of the same workflow for ref != main
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macOS-latest
+          - macOS-13
+          - ubuntu-latest
+        library_type: [shared, static]
+    steps:
+      - name: Install dependencies
+        if: matrix.os == 'macOS-latest' || matrix.os == 'macOS-13'
+        run: brew install ccache openblas
+      - name: Install dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -e -u -x
+          sudo apt-get update
+          sudo apt-get --yes install --no-install-recommends \
+            ccache \
+            liblapacke-dev \
+            libopenblas-dev
+      - name: Print versions
+        run: |
+          ccache --version
+          cmake --version
+          gcc --version
+          g++ --version
+      - id: cache-ccache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            ~/Library/Caches/ccache
+          key: ${{ runner.arch }}-${{ runner.os }}-${{ matrix.library_type }}-ccache
+      - uses: actions/checkout@v4
+      - name: Show ccache stats
+        run: ccache --show-stats --verbose
+      - name: Build
+        run: |
+          set -e -x
+          export CMAKE_EXTRA_OPTIONS=()
+          if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "x86_64" ]]; then
+              CMAKE_EXTRA_OPTIONS+=("-DMLX_ENABLE_X64_MAC=ON")
+          fi
+          cmake \
+            -B build \
+            -DBUILD_SHARED_LIBS=${{ matrix.library_type == 'shared' && 'ON' || 'OFF' }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DMLX_C_BUILD_EXAMPLES=OFF \
+            ${CMAKE_EXTRA_OPTIONS[@]}
+          cmake --build build --parallel $(nproc)
+      - name: Show ccache stats
+        run: ccache --show-stats --verbose
+        if: always()
+      - id: cache-ccache-save
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+            key: ${{ steps.cache-ccache-restore.outputs.cache-primary-key }}
+            path: |
+              ~/.cache/ccache
+              ~/Library/Caches/ccache
